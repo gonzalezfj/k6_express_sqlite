@@ -52,14 +52,13 @@ describe('API Endpoints', () => {
   test('GET /items/:id should return a single item', async () => {
     const newItem = { name: 'TestItem', description: 'Test description' };
     const createdItem = await createItem(newItem);
-    console.log({createdItem});
 
-    // const response = await request(app)
-    //   .get(`/items/${createdItem.id}`)
-    //   .expect('Content-Type', /json/)
-    //   .expect(200);
+    const response = await request(app)
+      .get(`/items/${createdItem.id}`)
+      .expect('Content-Type', /json/)
+      .expect(200);
 
-    // expect(response.body.id).toBe(createdItem.id);
+    expect(response.body.id).toBe(createdItem.id);
   });
 
   test('POST /items should create a new item and return it', async () => {

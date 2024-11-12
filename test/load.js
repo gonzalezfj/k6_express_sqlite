@@ -60,11 +60,11 @@ export default function () {
   }
 
   // Test GET all items to verify operations
-  // let response = http.get(http.url`${baseUrl}/items`);
-  // check(response, {
-  //   'get all items returns 200': (r) => r.status === 200,
-  //   'get all items returns array': (r) => Array.isArray(JSON.parse(r.body).items),
-  // });
+  let response = http.get(http.url`${baseUrl}/items`);
+  check(response, {
+    'get all items returns 200': (r) => r.status === 200,
+    'get all items returns array': (r) => Array.isArray(JSON.parse(r.body).items),
+  });
 
   sleep(1); // Wait 1 second between iterations
 }

@@ -6,8 +6,10 @@
   "scripts": {
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "serve": "node src/server.js",
+    "serve:prod": "NODE_ENV=production node src/server.js",
     "cluster": "node src/server.js --cluster",
-    "load-test": "k6 run test/load.js"
+    "cluster:prod": "NODE_ENV=production node src/server.js --cluster",
+    "load-test": "k6 run --summary-trend-stats=\"med,p(95),p(99.9)\" test/load.js"
   },
   "keywords": [],
   "author": "",

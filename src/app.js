@@ -6,7 +6,7 @@ import itemsRouter from "./routes/items.js";
 import sqlite from "./database.js";
 const retries = process.argv.includes("--retries");
 
-const db = sqlite.createDatabase();
+const db = await sqlite.createDatabase();
 
 // HTTP request logger
 app.use(morgan("dev"));

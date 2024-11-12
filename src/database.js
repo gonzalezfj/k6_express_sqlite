@@ -2,57 +2,77 @@ import sqlite3 from "sqlite3";
 
 /**
  * Creates and initializes a SQLite database connection
- * @returns {import('sqlite3').Database} Configured SQLite database instance
+ * @returns {Promise<import('sqlite3').Database>} Configured SQLite database instance
  * @description
  * - Creates database with shared cache enabled
  * - Enables Write-Ahead Logging (WAL) mode for better concurrency
+ * - Sets synchronous mode to normal for improved performance
+ * - Uses in-memory temp store for faster temp operations
+ * - Sets mmap size to 30GB for larger databases
  * - Creates items table if it doesn't exist
- * - Sets up error handling
- * @throws {Error} If database connection, WAL mode, or table creation fails
+ * @throws {Error} If database connection, configuration, or table creation fails
  */
-function createDatabase() {
-  // Create SQLite database connection with shared cache enabled
-  const db = new sqlite3.Database(
-    "./data/database.db",
-    sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE | sqlite3.OPEN_SHAREDCACHE,
-    (err) => {
-      if (err) {
-        console.error("Error connecting to database:", err);
-        process.exit(1);
-      } else {
-        console.log("Connected to SQLite database");
-        // Enable WAL mode
-        db.run("PRAGMA journal_mode = WAL", (err) => {
-          if (err) {
-            console.error("Error enabling WAL mode:", err);
-            process.exit(1);
-          }
-          console.log("WAL mode enabled");
-        });
-        // Create table if it doesn't exist
-        db.run(
-          `CREATE TABLE IF NOT EXISTS items (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT NOT NULL,
-          description TEXT
-        )`,
-          (err) => {
-            if (err) {
-              console.error("Error creating table:", err);
-              process.exit(1);
-            }
-          }
-        );
-      }
-    }
-  );
+async function createDatabase() {
+  try {
+    // Create SQLite database connection with shared cache enabled
+    const db = await new Promise((resolve, reject) => {
+      const database = new sqlite3.Database(
+        "./data/database.db",
+        sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE | sqlite3.OPEN_SHAREDCACHE,
+        (err) => {
+          if (err) reject(err);
+          else resolve(database);
+        }
+      );
+    });
 
-  // Handle database errors
-  db.on("error", (err) => {
-    console.error("Database error:", err);
+    console.log("Connected to SQLite database");
+
+    // Configure database for performance
+    await Promise.all([
+      runQuery(db, "PRAGMA journal_mode = WAL"),
+      runQuery(db, "PRAGMA synchronous = NORMAL"),
+      runQuery(db, "PRAGMA temp_store = MEMORY"),
+      runQuery(db, "PRAGMA mmap_size = 30000000000")
+    ]);
+
+    console.log("Database configured for performance");
+
+    // Create table if it doesn't exist
+    await runQuery(db, `
+      CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT
+      )
+    `);
+
+    // Handle database errors
+    db.on("error", (err) => {
+      console.error("Database error:", err);
+    });
+
+    return db;
+
+  } catch (err) {
+    console.error("Error initializing database:", err);
+    process.exit(1);
+  }
+}
+
+/**
+ * Helper function to run SQL queries as promises
+ * @param {import('sqlite3').Database} db Database instance
+ * @param {string} query SQL query to execute
+ * @returns {Promise<void>}
+ */
+function runQuery(db, query) {
+  return new Promise((resolve, reject) => {
+    db.run(query, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
   });
-
-  return db;
 }
 
 export default { createDatabase };
