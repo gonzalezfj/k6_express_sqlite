@@ -1,5 +1,6 @@
 import express from "express";
 const router = express.Router();
+import { promisify } from "util";
 
 /**
  * Creates and configures an Express router for handling item-related routes
@@ -15,58 +16,65 @@ function itemsRouter(db, options = {}) {
   const maxRetries = options.maxRetries || 3;
   const retryDelay = options.retryDelay || 100;
 
-  // Get all items with pagination
-  router.get("/", (req, res) => {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
+  const dbAll = promisify(db.all).bind(db);
+  const dbGet = promisify(db.get).bind(db);
+  const dbRun = promisify(db.run).bind(db);
 
-    db.all("SELECT * FROM items LIMIT ? OFFSET ?", [limit, offset], (err, rows) => {
-      if (err) {
-        console.error("Error getting all items:", err);
-        res.status(500).json({ error: err.message });
-        return;
+  async function retryOperation(operation, retries = maxRetries) {
+    try {
+      return await operation();
+    } catch (err) {
+      if (shouldRetry && err.code === "SQLITE_BUSY" && retries > 0) {
+        console.warn("Database busy, retrying operation...", { retriesLeft: retries - 1 });
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        return retryOperation(operation, retries - 1);
       }
-      db.get("SELECT COUNT(*) AS count FROM items", [], (err, result) => {
-        if (err) {
-          console.error("Error counting items:", err);
-          res.status(500).json({ error: err.message });
-          return;
-        }
-        const totalItems = result.count;
-        const totalPages = Math.ceil(totalItems / limit);
-        res.json({
-          items: rows,
-          pagination: {
-            totalItems,
-            totalPages,
-            currentPage: page,
-            pageSize: limit,
-          },
-        });
+      throw err;
+    }
+  }
+
+  async function getAllItems(req, res) {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const offset = (page - 1) * limit;
+
+      const rows = await dbAll("SELECT * FROM items LIMIT ? OFFSET ?", [limit, offset]);
+      const result = await dbGet("SELECT COUNT(*) AS count FROM items", []);
+      const totalItems = result.count;
+      const totalPages = Math.ceil(totalItems / limit);
+
+      res.json({
+        items: rows,
+        pagination: {
+          totalItems,
+          totalPages,
+          currentPage: page,
+          pageSize: limit,
+        },
       });
-    });
-  });
+    } catch (err) {
+      console.error("Error getting all items:", err);
+      res.status(500).json({ error: err.message });
+    }
+  }
 
-  // Get single item by id
-  router.get("/:id", (req, res) => {
-    db.get("SELECT * FROM items WHERE id = ?", [req.params.id], (err, row) => {
-      if (err) {
-        console.error(`Error getting item ${req.params.id}:`, err);
-        res.status(500).json({ error: err.message });
-        return;
-      }
+  async function getItemById(req, res) {
+    try {
+      const row = await dbGet("SELECT * FROM items WHERE id = ?", [req.params.id]);
       if (!row) {
         console.warn(`Item not found with id ${req.params.id}`);
         res.status(404).json({ error: "Item not found" });
         return;
       }
       res.json(row);
-    });
-  });
+    } catch (err) {
+      console.error(`Error getting item ${req.params.id}:`, err);
+      res.status(500).json({ error: err.message });
+    }
+  }
 
-  // Create new item
-  router.post("/", (req, res) => {
+  async function createNewItem(req, res) {
     const { name, description } = req.body;
     if (!name) {
       console.warn("Attempted to create item without name:", req.body);
@@ -74,138 +82,61 @@ function itemsRouter(db, options = {}) {
       return;
     }
 
-    const performInsert = (retries = maxRetries) => {
-      db.run(
-        "INSERT INTO items (name, description) VALUES (?, ?)",
-        [name, description],
-        function (err) {
-          if (err) {
-            if (shouldRetry && err.code === "SQLITE_BUSY" && retries > 0) {
-              console.warn("Database busy, retrying insert...", {
-                retriesLeft: retries - 1,
-              });
-              setTimeout(() => performInsert(retries - 1), retryDelay);
-              return;
-            }
-            console.error("Error creating new item:", err, {
-              name,
-              description,
-            });
-            res.status(500).json({ error: err.message });
-            return;
-          }
-          db.get(
-            "SELECT * FROM items WHERE id = ?",
-            [this.lastID],
-            (err, row) => {
-              if (err) {
-                console.error(
-                  `Error retrieving created item ${this.lastID}:`,
-                  err
-                );
-                res.status(500).json({ error: err.message });
-                return;
-              }
-              res.json(row);
-            }
-          );
-        }
-      );
-    };
+    try {
+      await retryOperation(() => dbRun("INSERT INTO items (name, description) VALUES (?, ?)", [name, description]));
+      const row = await dbGet("SELECT * FROM items WHERE name = ? AND description = ? ORDER BY id DESC LIMIT 1", [name, description]);
+      res.json(row);
+    } catch (err) {
+      console.error("Error creating new item:", err, { name, description });
+      res.status(500).json({ error: err.message });
+    }
+  }
 
-    performInsert();
-  });
-
-  // Update item
-  router.put("/:id", (req, res) => {
+  async function updateItem(req, res) {
     const { name, description } = req.body;
     if (!name) {
-      console.warn(
-        `Attempted to update item ${req.params.id} without name:`,
-        req.body
-      );
+      console.warn(`Attempted to update item ${req.params.id} without name:`, req.body);
       res.status(400).json({ error: "Name is required" });
       return;
     }
 
-    const performUpdate = (retries = maxRetries) => {
-      db.run(
-        "UPDATE items SET name = ?, description = ? WHERE id = ?",
-        [name, description, req.params.id],
-        function (err) {
-          if (err) {
-            if (shouldRetry && err.code === "SQLITE_BUSY" && retries > 0) {
-              console.warn("Database busy, retrying update...", {
-                retriesLeft: retries - 1,
-              });
-              setTimeout(() => performUpdate(retries - 1), retryDelay);
-              return;
-            }
-            console.error(`Error updating item ${req.params.id}:`, err, {
-              name,
-              description,
-            });
-            res.status(500).json({ error: err.message });
-            return;
-          }
-          if (this.changes === 0) {
-            console.warn(
-              `Attempted to update non-existent item ${req.params.id}`
-            );
-            res.status(404).json({ error: "Item not found" });
-            return;
-          }
-          db.get(
-            "SELECT * FROM items WHERE id = ?",
-            [req.params.id],
-            (err, row) => {
-              if (err) {
-                console.error(
-                  `Error retrieving updated item ${req.params.id}:`,
-                  err
-                );
-                res.status(500).json({ error: err.message });
-                return;
-              }
-              res.json(row);
-            }
-          );
-        }
-      );
-    };
+    try {
+      await retryOperation(() => dbRun("UPDATE items SET name = ?, description = ? WHERE id = ?", [name, description, req.params.id]));
+      const row = await dbGet("SELECT * FROM items WHERE id = ?", [req.params.id]);
+      if (!row) {
+        console.warn(`Attempted to update non-existent item ${req.params.id}`);
+        res.status(404).json({ error: "Item not found" });
+        return;
+      }
+      res.json(row);
+    } catch (err) {
+      console.error(`Error updating item ${req.params.id}:`, err, { name, description });
+      res.status(500).json({ error: err.message });
+    }
+  }
 
-    performUpdate();
-  });
+  async function deleteItem(req, res) {
+    try {
+      await retryOperation(() => dbRun("DELETE FROM items WHERE id = ?", [req.params.id]));
+      // Check if item existed before deletion
+      const row = await dbGet("SELECT * FROM items WHERE id = ?", [req.params.id]);
+      if (row) {
+        console.warn(`Attempted to delete non-existent item ${req.params.id}`);
+        res.status(404).json({ error: "Item not found" });
+        return;
+      }
+      res.json({ message: "Item deleted" });
+    } catch (err) {
+      console.error(`Error deleting item ${req.params.id}:`, err);
+      res.status(500).json({ error: err.message });
+    }
+  }
 
-  // Delete item
-  router.delete("/:id", (req, res) => {
-    const performDelete = (retries = maxRetries) => {
-      db.run("DELETE FROM items WHERE id = ?", [req.params.id], function (err) {
-        if (err) {
-          if (shouldRetry && err.code === "SQLITE_BUSY" && retries > 0) {
-            console.warn("Database busy, retrying delete...", {
-              retriesLeft: retries - 1,
-            });
-            setTimeout(() => performDelete(retries - 1), retryDelay);
-            return;
-          }
-          console.error(`Error deleting item ${req.params.id}:`, err);
-          res.status(500).json({ error: err.message });
-          return;
-        }
-        if (this.changes === 0) {
-          console.warn(
-            `Attempted to delete non-existent item ${req.params.id}`
-          );
-          res.status(404).json({ error: "Item not found" });
-          return;
-        }
-        res.json({ message: "Item deleted" });
-      });
-    };
-
-    performDelete();
-  });
+  router.get("/", getAllItems);
+  router.get("/:id", getItemById);
+  router.post("/", createNewItem);
+  router.put("/:id", updateItem);
+  router.delete("/:id", deleteItem);
 
   return router;
 }
